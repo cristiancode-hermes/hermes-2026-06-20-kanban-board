@@ -1,0 +1,173 @@
+import { Test, TestingModule } from '@nestjs/testing';
+import { getRepositoryToken } from '@nestjs/typeorm';
+import { Repository } from 'typeorm';
+import { CardsService } from './cards.service';
+import { Card } from './card.entity';
+import { ColumnEntity } from '../columns/column.entity';
+import { Board } from '../boards/board.entity';
+import { ActivitiesService } from '../activities/activities.service';
+import { SseService } from '../sse/sse.service';
+
+describe('CardsService', () => {
+  let service: CardsService;
+  let cardRepository: jest.Mocked<Partial<Repository<Card>>>;
+
+  beforeEach(async () => {
+    cardRepository = {
+      find: jest.fn(),
+      findOne: jest.fn(),
+      create: jest.fn().mockImplementation((dto) => dto as Card),
+      save: jest.fn().mockImplementation((entity) => Promise.resolve(entity)),
+      delete: jest.fn(),
+      remove: jest.fn(),
+      createQueryBuilder: jest.fn(),
+    };
+
+    const module: TestingModule = await Test.createTestingModule({
+      providers: [
+        CardsService,
+        {
+          provide: getRepositoryToken(Card),
+          useValue: cardRepository,
+        },
+        {
+          provide: getRepositoryToken(ColumnEntity),
+          useValue: {
+            findOne: jest.fn(),
+            createQueryBuilder: jest.fn(),
+          },
+        },
+        {
+          provide: getRepositoryToken(Board),
+          useValue: {
+            findOne: jest.fn(),
+            createQueryBuilder: jest.fn(),
+          },
+        },
+        {
+          provide: ActivitiesService,
+          useValue: { create: jest.fn() },
+        },
+        {
+          provide: SseService,
+          useValue: { emit: jest.fn() },
+        },
+      ],
+    }).compile();
+
+    service = module.get<CardsService>(CardsService);
+  });
+
+  it('should be defined', () => {
+    expect(service).toBeDefined();
+  });
+
+  describe('position recalculation', () => {
+    it('should recalculate positions when moving a card between columns', async () => {
+      const mockCard = {
+        id: 1,
+        columnId: 1,
+        position: 2,
+        boardId: 1,
+        title: 'Test Card',
+      } as Card;
+
+      const mockSave = jest
+        .fn()
+        .mockResolvedValue({ ...mockCard, columnId: 2, position: 0 });
+      cardRepository.save.mockImplementation(mockSave);
+
+      // Mock createQueryBuilder for update queries
+      const mockQueryBuilder = {
+        update: jest.fn().mockReturnThis(),
+        set: jest.fn().mockReturnThis(),
+        where: jest.fn().mockReturnThis(),
+        execute: jest.fn().mockResolvedValue(undefined),
+      };
+
+      cardRepository.createQueryBuilder.mockReturnValue(
+        mockQueryBuilder as any,
+      );
+
+      // Setup findOne to return the card initially, then after save
+      cardRepository.findOne
+        .mockResolvedValueOnce(mockCard) // first call in findById
+        .mockResolvedValueOnce({
+          // second call after save
+          ...mockCard,
+          columnId: 2,
+          position: 0,
+          column: { id: 2 },
+          assignee: null,
+        });
+
+      const result = await service.moveCard(
+        1,
+        { columnId: 2, position: 0 },
+        1,
+      );
+
+      expect(mockQueryBuilder.execute).toHaveBeenCalled();
+      expect(mockSave).toHaveBeenCalledWith(
+        expect.objectContaining({ columnId: 2, position: 0 }),
+      );
+    });
+
+    it('should decrement positions in old column after moving card out', async () => {
+      const mockCard = {
+        id: 1,
+        columnId: 1,
+        position: 2,
+        boardId: 1,
+      } as Card;
+
+      cardRepository.findOne
+        .mockResolvedValueOnce(mockCard)
+        .mockResolvedValueOnce({
+          ...mockCard,
+          columnId: 2,
+          position: 0,
+          column: { id: 2 },
+          assignee: null,
+        });
+
+      const decrementMock = {
+        update: jest.fn().mockReturnThis(),
+        set: jest.fn().mockReturnThis(),
+        where: jest.fn().mockReturnThis(),
+        execute: jest.fn().mockResolvedValue(undefined),
+      };
+
+      const incrementMock = {
+        update: jest.fn().mockReturnThis(),
+        set: jest.fn().mockReturnThis(),
+        where: jest.fn().mockReturnThis(),
+        execute: jest.fn().mockResolvedValue(undefined),
+      };
+
+      cardRepository.createQueryBuilder
+        .mockReturnValueOnce(decrementMock as any)
+        .mockReturnValueOnce(incrementMock as any);
+
+      cardRepository.save.mockResolvedValue({
+        ...mockCard,
+        columnId: 2,
+        position: 0,
+      });
+
+      await service.moveCard(1, { columnId: 2, position: 0 }, 1);
+
+      // Check decrement was called for old column
+      expect(decrementMock.where).toHaveBeenCalledWith(
+        'column_id = :columnId AND position > :oldPos',
+        expect.objectContaining({ columnId: 1, oldPos: 2 }),
+      );
+
+      // Check increment was called for new column
+      expect(incrementMock.where).toHaveBeenCalledWith(
+        'column_id = :columnId AND position >= :newPos',
+        expect.objectContaining({ columnId: 2, newPos: 0 }),
+      );
+    });
+  });
+});

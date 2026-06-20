@@ -1,0 +1,89 @@
+import { Test, TestingModule } from '@nestjs/testing';
+import { SseService } from './sse.service';
+
+describe('SseService', () => {
+  let service: SseService;
+
+  beforeEach(async () => {
+    const module: TestingModule = await Test.createTestingModule({
+      providers: [SseService],
+    }).compile();
+
+    service = module.get<SseService>(SseService);
+  });
+
+  it('should be defined', () => {
+    expect(service).toBeDefined();
+  });
+
+  it('should emit and receive events for the same board', (done) => {
+    const subscription = service.getObservable(1).subscribe({
+      next: (event: MessageEvent) => {
+        expect(event.type).toBe('card:created');
+        expect(event.data).toBe(JSON.stringify({ id: 1 }));
+        subscription.unsubscribe();
+        done();
+      },
+    });
+
+    service.emit(1, { type: 'card:created', data: { id: 1 } });
+  });
+
+  it('should not receive events for different boards', (done) => {
+    const spy = jest.fn();
+
+    const subscription = service.getObservable(1).subscribe({
+      next: spy,
+      complete: () => {
+        expect(spy).not.toHaveBeenCalled();
+        done();
+      },
+    });
+
+    service.emit(2, { type: 'card:created', data: { id: 1 } });
+
+    // Give it a moment then cleanup
+    setTimeout(() => {
+      expect(spy).not.toHaveBeenCalled();
+      subscription.unsubscribe();
+      done();
+    }, 100);
+  });
+
+  it('should handle multiple subscribers for the same board', () => {
+    const spy1 = jest.fn();
+    const spy2 = jest.fn();
+
+    const sub1 = service.getObservable(1).subscribe({ next: spy1 });
+    const sub2 = service.getObservable(1).subscribe({ next: spy2 });
+
+    service.emit(1, { type: 'card:updated', data: { id: 2 } });
+
+    expect(spy1).toHaveBeenCalledTimes(1);
+    expect(spy2).toHaveBeenCalledTimes(1);
+
+    sub1.unsubscribe();
+    sub2.unsubscribe();
+  });
+
+  it('should create separate subjects for different boards', () => {
+    const spyBoard1 = jest.fn();
+    const spyBoard2 = jest.fn();
+
+    const sub1 = service.getObservable(1).subscribe({ next: spyBoard1 });
+    const sub2 = service.getObservable(2).subscribe({ next: spyBoard2 });
+
+    service.emit(1, { type: 'card:created', data: { id: 1 } });
+
+    expect(spyBoard1).toHaveBeenCalledTimes(1);
+    expect(spyBoard2).not.toHaveBeenCalled();
+
+    service.emit(2, { type: 'column:created', data: { id: 1 } });
+
+    expect(spyBoard1).toHaveBeenCalledTimes(1);
+    expect(spyBoard2).toHaveBeenCalledTimes(1);
+
+    sub1.unsubscribe();
+    sub2.unsubscribe();
+  });
+});
