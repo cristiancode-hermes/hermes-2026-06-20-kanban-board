@@ -22,6 +22,9 @@
       "sourceRoot": "src",
       "prefix": "app",
       "architect": {
+        "test": {
+          "builder": "@angular/build:unit-test"
+        },
         "build": {
           "builder": "@angular/build:application",
           "options": {
